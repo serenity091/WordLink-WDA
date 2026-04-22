@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iphone-wda-usb"
+version = "0.1.0"
+description = "Control a trusted iPhone over USB using XCUITest WebDriverAgent from Python."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "WordLink" }]
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=2",
+    "opencv-python>=4",
+    "pyusb>=1",
+    "av>=15",
+]
+
+[project.scripts]
+phonectl = "iphone_wda_usb.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

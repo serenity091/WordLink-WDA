@@ -1,0 +1,58 @@
+{
+  "letters": [
+    [
+      "Y",
+      "R",
+      "T",
+      "V"
+    ],
+    [
+      "V",
+      "E",
+      "T",
+      "G"
+    ],
+    [
+      "G",
+      "U",
+      "R",
+      "R"
+    ],
+    [
+      "E",
+      "A",
+      "A",
+      "U"
+    ]
+  ],
+  "dots": [
+    [
+      3,
+      1,
+      1,
+      4
+    ],
+    [
+      4,
+      1,
+      1,
+      3
+    ],
+    [
+      3,
+      2,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      2
+    ]
+  ],
+  "saved_at": 1776783278.831688,
+  "image": "last_letters.png",
+  "debug_image": "last_letters_debug.png",
+  "capture": "quicktime_usb_pyav"
+}
