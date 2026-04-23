@@ -170,6 +170,13 @@ If you changed WDA's bundle id in Xcode, pass it too:
 WDA_BUNDLE_ID=com.yourname.WebDriverAgentRunner UDID=YOUR_DEVICE_UDID python3 examples/appium_control.py
 ```
 
+If you refresh the packaged runner app's provisioning profile, embed and re-sign
+it with:
+
+```bash
+scripts/update_wda_provision.sh
+```
+
 ## 5. Use From Python
 
 ```python

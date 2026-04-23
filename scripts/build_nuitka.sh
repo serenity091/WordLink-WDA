@@ -147,6 +147,11 @@ fi
 
 if [[ -d WebDriverAgentRunner-Runner.app ]]; then
   cp -R WebDriverAgentRunner-Runner.app "$APP_DIR/WebDriverAgentRunner-Runner.app"
+  if [[ -f WebDriverRunner.mobileprovision ]]; then
+    ./scripts/update_wda_provision.sh \
+      --app "$APP_DIR/WebDriverAgentRunner-Runner.app" \
+      --profile WebDriverRunner.mobileprovision
+  fi
 fi
 
 for required in \
