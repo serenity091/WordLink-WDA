@@ -193,7 +193,7 @@ install_appium() {
     fi
   fi
 
-  if command -v appium >/dev/null 2>&1 && appium driver list --installed 2>/dev/null | grep -qi xcuitest; then
+  if command -v appium >/dev/null 2>&1 && appium driver list --installed 2>&1 | grep -qi xcuitest; then
     ok "Appium XCUITest driver is installed"
     return 0
   fi

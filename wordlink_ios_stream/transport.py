@@ -22,8 +22,10 @@ from .protocol import MessageProcessor, SampleConsumer
 LOG = logging.getLogger(__name__)
 QT_REENUMERATE_ATTEMPTS = 16
 QT_REENUMERATE_INTERVAL_SECONDS = 0.25
-READ_CHUNK_SIZE = 1024 * 1024
+READ_CHUNK_SIZE = 64 * 1024
 READ_TIMEOUT_MS = 3000
+INITIAL_READ_RETRY_SECONDS = 1.5
+INITIAL_READ_RETRY_INTERVAL_SECONDS = 0.1
 
 
 def runtime_root() -> Path:
@@ -156,6 +158,32 @@ def find_stream_endpoints(interface: Any) -> tuple[Any, Any]:
     return in_endpoint, out_endpoint
 
 
+def describe_usb_error(exc: BaseException) -> str:
+    parts = [str(exc) or exc.__class__.__name__]
+    for attr in ("errno", "strerror", "backend_error_code", "backend_error_name"):
+        value = getattr(exc, attr, None)
+        if value not in (None, ""):
+            parts.append(f"{attr}={value}")
+    return "; ".join(parts)
+
+
+def claim_interface(device: Any, interface: Any) -> int:
+    interface_number = int(interface.bInterfaceNumber)
+    try:
+        if hasattr(device, "is_kernel_driver_active") and device.is_kernel_driver_active(interface_number):
+            LOG.debug("Detaching kernel driver from QuickTime interface %s", interface_number)
+            device.detach_kernel_driver(interface_number)
+    except Exception as exc:
+        LOG.debug("Kernel driver detach check failed for interface %s: %s", interface_number, exc)
+
+    try:
+        usb.util.claim_interface(device, interface_number)
+        LOG.debug("Claimed QuickTime USB interface %s", interface_number)
+    except Exception as exc:
+        LOG.debug("Could not explicitly claim QuickTime USB interface %s: %s", interface_number, exc)
+    return interface_number
+
+
 class BytePipe:
     def __init__(self) -> None:
         self.buffer = bytearray()
@@ -197,19 +225,40 @@ def start_reading(consumer: SampleConsumer, device: Any, backend: Any, stop_sign
     device.ctrl_transfer(0x02, 0x01, 0, 0x86, b"")
     device.ctrl_transfer(0x02, 0x01, 0, 0x05, b"")
     in_endpoint, out_endpoint = find_stream_endpoints(quicktime_interface)
-    LOG.info("QuickTime USB connection ready")
+    interface_number = claim_interface(device, quicktime_interface)
+    in_address = int(in_endpoint.bEndpointAddress)
+    out_address = int(out_endpoint.bEndpointAddress)
+    LOG.info(
+        "QuickTime USB connection ready: interface=%s in=0x%02x out=0x%02x chunk=%d",
+        interface_number,
+        in_address,
+        out_address,
+        READ_CHUNK_SIZE,
+    )
 
     byte_pipe = BytePipe()
     errors: queue.Queue[BaseException] = queue.Queue()
-    processor = MessageProcessor(device, in_endpoint, out_endpoint, stop_signal, consumer)
+    processor = MessageProcessor(device, in_address, out_address, stop_signal, consumer)
+    first_packet_seen = threading.Event()
 
     def read_usb() -> None:
+        started_at = time.monotonic()
         while not stop_signal.is_set():
             try:
-                byte_pipe.put(device.read(in_endpoint, READ_CHUNK_SIZE, READ_TIMEOUT_MS))
+                data = device.read(in_address, READ_CHUNK_SIZE, READ_TIMEOUT_MS)
+                first_packet_seen.set()
+                byte_pipe.put(data)
             except Exception as exc:
+                if (
+                    not first_packet_seen.is_set()
+                    and time.monotonic() - started_at < INITIAL_READ_RETRY_SECONDS
+                    and not stop_signal.is_set()
+                ):
+                    LOG.debug("Initial QuickTime USB read failed, retrying: %s", describe_usb_error(exc))
+                    time.sleep(INITIAL_READ_RETRY_INTERVAL_SECONDS)
+                    continue
                 if not stop_signal.is_set():
-                    errors.put(exc)
+                    errors.put(RuntimeError(f"QuickTime USB read failed: {describe_usb_error(exc)}"))
                 stop_signal.set()
                 byte_pipe.close()
                 break
@@ -245,11 +294,31 @@ def start_reading(consumer: SampleConsumer, device: Any, backend: Any, stop_sign
         while not stop_signal.wait(0.25):
             if not errors.empty():
                 raise errors.get()
+        if not errors.empty():
+            raise errors.get()
     finally:
         byte_pipe.close()
         try:
-            processor.close_session()
+            if first_packet_seen.is_set():
+                try:
+                    processor.close_session()
+                except Exception as exc:
+                    LOG.debug("QuickTime close-session cleanup failed: %s", describe_usb_error(exc))
         finally:
             disable_quicktime_config(device)
-            usb.util.dispose_resources(device)
+            with contextlib_suppress(Exception):
+                usb.util.release_interface(device, interface_number)
+            with contextlib_suppress(Exception):
+                usb.util.dispose_resources(device)
             consumer.stop()
+
+
+class contextlib_suppress:
+    def __init__(self, *exceptions: type[BaseException]) -> None:
+        self.exceptions = exceptions or (Exception,)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return exc_type is not None and issubclass(exc_type, self.exceptions)

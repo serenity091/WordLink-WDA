@@ -88,24 +88,28 @@ def main() -> int:
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    if not appium_is_running():
-        appium_process = start_appium()
-        wait_for_appium()
+    wda_status = get_wda_status(timeout=2.0)
+    if wda_status is not None:
+        print(f"Using existing WDA at {WDA_URL}")
     else:
-        print(f"Using existing Appium server at {APPIUM_URL}")
+        if not appium_is_running():
+            appium_process = start_appium()
+            wait_for_appium()
+        else:
+            print(f"Using existing Appium server at {APPIUM_URL}")
 
-    print(f"Starting WDA on device {udid}...")
-    print(f"WDA bundle id: {WDA_BUNDLE_ID}")
-    print(f"Use preinstalled WDA: {USE_PREINSTALLED_WDA}")
-    print(f"Force new WDA launch: {FORCE_NEW_WDA}")
-    print("Creating Appium session...")
-    appium_session = create_appium_session(udid)
-
-    wda_status = wait_for_wda()
+        print(f"Starting WDA on device {udid}...")
+        print(f"WDA bundle id: {WDA_BUNDLE_ID}")
+        print(f"Use preinstalled WDA: {USE_PREINSTALLED_WDA}")
+        print(f"Force new WDA launch: {FORCE_NEW_WDA}")
+        print("Creating Appium session...")
+        appium_session = create_appium_session(udid)
+        wda_status = wait_for_wda()
 
     print("WDA is running.")
     print("Leave this script open. Press Ctrl-C to stop.")
-    print(f"Appium session id: {appium_session.session_id}")
+    if appium_session is not None:
+        print(f"Appium session id: {appium_session.session_id}")
     print(f"WDA status: {json.dumps(wda_status)}")
 
     run_screenshot_viewer(udid)
@@ -306,13 +310,23 @@ def wait_for_wda(timeout: float = 30.0) -> dict:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
     while time.monotonic() < deadline:
-        try:
-            with urlopen(f"{WDA_URL}/status", timeout=2.0) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except Exception as exc:  # noqa: BLE001 - report the last readiness failure.
-            last_error = exc
-            time.sleep(0.5)
+        status = get_wda_status(timeout=2.0)
+        if status is not None:
+            return status
+        last_error = RuntimeError("WDA status probe failed")
+        time.sleep(0.5)
     raise RuntimeError(f"WDA did not respond on localhost:8100 within {timeout:.0f}s: {last_error}")
+
+
+def get_wda_status(timeout: float = 2.0) -> dict | None:
+    try:
+        with urlopen(f"{WDA_URL}/status", timeout=timeout) as response:
+            if response.status != 200:
+                return None
+            parsed = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def wda_request(method: str, path: str, payload: dict[str, Any] | None = None, timeout: float = 15.0) -> Any:
