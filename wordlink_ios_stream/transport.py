@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import struct
 import sys
@@ -26,6 +27,23 @@ READ_CHUNK_SIZE = 64 * 1024
 READ_TIMEOUT_MS = 3000
 INITIAL_READ_RETRY_SECONDS = 1.5
 INITIAL_READ_RETRY_INTERVAL_SECONDS = 0.1
+
+
+def env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except ValueError:
+        return default
 
 
 def runtime_root() -> Path:
@@ -169,6 +187,10 @@ def describe_usb_error(exc: BaseException) -> str:
 
 def claim_interface(device: Any, interface: Any) -> int:
     interface_number = int(interface.bInterfaceNumber)
+    if not env_bool("WORDLINK_USB_CLAIM_INTERFACE", False):
+        LOG.info("Skipping explicit USB interface claim; set WORDLINK_USB_CLAIM_INTERFACE=1 to enable it")
+        return interface_number
+
     try:
         if hasattr(device, "is_kernel_driver_active") and device.is_kernel_driver_active(interface_number):
             LOG.debug("Detaching kernel driver from QuickTime interface %s", interface_number)
@@ -178,9 +200,13 @@ def claim_interface(device: Any, interface: Any) -> int:
 
     try:
         usb.util.claim_interface(device, interface_number)
-        LOG.debug("Claimed QuickTime USB interface %s", interface_number)
+        LOG.info("Claimed QuickTime USB interface %s", interface_number)
     except Exception as exc:
-        LOG.debug("Could not explicitly claim QuickTime USB interface %s: %s", interface_number, exc)
+        LOG.warning(
+            "Could not explicitly claim QuickTime USB interface %s: %s",
+            interface_number,
+            describe_usb_error(exc),
+        )
     return interface_number
 
 
@@ -228,24 +254,28 @@ def start_reading(consumer: SampleConsumer, device: Any, backend: Any, stop_sign
     interface_number = claim_interface(device, quicktime_interface)
     in_address = int(in_endpoint.bEndpointAddress)
     out_address = int(out_endpoint.bEndpointAddress)
+    read_endpoint = in_address if env_bool("WORDLINK_USB_USE_ENDPOINT_ADDRESS", False) else in_endpoint
+    write_endpoint = out_address if env_bool("WORDLINK_USB_USE_ENDPOINT_ADDRESS", False) else out_endpoint
+    read_chunk_size = env_int("WORDLINK_USB_READ_CHUNK_SIZE", READ_CHUNK_SIZE)
     LOG.info(
-        "QuickTime USB connection ready: interface=%s in=0x%02x out=0x%02x chunk=%d",
+        "QuickTime USB connection ready: interface=%s in=0x%02x out=0x%02x chunk=%d endpoint_mode=%s",
         interface_number,
         in_address,
         out_address,
-        READ_CHUNK_SIZE,
+        read_chunk_size,
+        "address" if env_bool("WORDLINK_USB_USE_ENDPOINT_ADDRESS", False) else "object",
     )
 
     byte_pipe = BytePipe()
     errors: queue.Queue[BaseException] = queue.Queue()
-    processor = MessageProcessor(device, in_address, out_address, stop_signal, consumer)
+    processor = MessageProcessor(device, in_address, write_endpoint, stop_signal, consumer)
     first_packet_seen = threading.Event()
 
     def read_usb() -> None:
         started_at = time.monotonic()
         while not stop_signal.is_set():
             try:
-                data = device.read(in_address, READ_CHUNK_SIZE, READ_TIMEOUT_MS)
+                data = device.read(read_endpoint, read_chunk_size, READ_TIMEOUT_MS)
                 first_packet_seen.set()
                 byte_pipe.put(data)
             except Exception as exc:
